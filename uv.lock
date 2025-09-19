@@ -1,0 +1,20 @@
+version = 1
+revision = 3
+requires-python = ">=3.12"
+
+[[package]]
+name = "hass-intercom"
+version = "0.1.0"
+source = { virtual = "." }
+dependencies = [
+    { name = "simpleaudio" },
+]
+
+[package.metadata]
+requires-dist = [{ name = "simpleaudio" }]
+
+[[package]]
+name = "simpleaudio"
+version = "1.0.4"
+source = { registry = "https://pypi.org/simple" }
+sdist = { url = "https://files.pythonhosted.org/packages/94/1b/4dc29653733202b68c09d9c6ca085cf67ac54859ee860647ef21ac1ff3dc/simpleaudio-1.0.4.tar.gz", hash = "sha256:691c88649243544db717e7edf6a9831df112104e1aefb5f6038a5d071e8cf41d", size = 2042564, upload-time = "2019-11-29T03:56:28.965Z" }
