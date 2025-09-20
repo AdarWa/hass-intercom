@@ -5,7 +5,7 @@ import asyncio
 import logging
 import uuid
 from dataclasses import dataclass, field
-from typing import Callable, Dict, List, Optional
+from typing import Callable, Dict, Optional
 
 from audio_utils import (
     AudioFormat,
