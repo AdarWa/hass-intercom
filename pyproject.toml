@@ -6,5 +6,7 @@ readme = "README.md"
 requires-python = ">=3.12"
 dependencies = [
     "simpleaudio @ git+https://github.com/cexen/py-simple-audio.git",
-    "sounddevice"
+    "sounddevice",
+    "numpy",
+    "scipy"
 ]

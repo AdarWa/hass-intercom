@@ -5,14 +5,16 @@ import asyncio
 import logging
 import uuid
 from dataclasses import dataclass, field
-from typing import Callable, Dict, Optional
+from typing import Callable, Dict, List, Optional
 
 from audio_utils import (
     AudioFormat,
     AudioSink,
     AudioSource,
     FileAudioSource,
+    HighPassFilter,
     MicrophoneAudioSource,
+    NotchFilter,
     NullAudioSink,
     SilenceAudioSource,
     SimpleAudioSink,
@@ -25,7 +27,7 @@ from protocol_client import ConnectionClosed, JsonConnection, open_connection, r
 
 DEFAULT_SAMPLE_RATE = 16000
 DEFAULT_CHANNELS = 1
-DEFAULT_FRAME_MS = 40
+DEFAULT_FRAME_MS = 320
 
 
 @dataclass(slots=True)
@@ -172,7 +174,7 @@ class IntercomClient:
             format=self.format,
             source=source,
             sink=sink,
-            connection=connection,
+            connection=connection
         )
         task = asyncio.create_task(self._source_loop(stream))
         stream.task = task
@@ -251,9 +253,16 @@ class IntercomClient:
             await self._terminate_stream(stream_id)
 
     async def _source_loop(self, stream: IntercomAudioStream) -> None:
+        global filters
+        notch = NotchFilter(stream.format, freq=filters.get("notch", 50))        # for hum
+        highpass = HighPassFilter(stream.format, cutoff=filters.get("highpass", 100))  # for clunks/pops
         try:
             while True:
                 frame = await stream.source.read_frame()
+                if "notch" in filters.keys():
+                    frame = notch.process(frame)
+                if "highpass" in filters.keys():
+                    frame = highpass.process(frame)
                 await stream.connection.send(
                     {
                         "type": "audio_frame",
@@ -361,6 +370,10 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--silence", action="store_true", help="Use silence as outbound audio source")
     parser.add_argument("--mute", action="store_true", help="Discard inbound audio instead of playing it")
     parser.add_argument("--log-level", default="INFO", help="Logging level")
+    parser.add_argument("--notch", type=float, default=50.0, help="Notch filter frequency (Hz)")
+    parser.add_argument("--highpass", type=float, default=100.0, help="High-pass filter cutoff (Hz)")
+    parser.add_argument("--enable-notch", action="store_true", help="Enable notch filter")
+    parser.add_argument("--enable-highpass", action="store_true", help="Enable high-pass filter")
     return parser.parse_args()
 
 
@@ -372,6 +385,12 @@ def main() -> None:
         channels=args.channels,
         frame_ms=args.frame_ms,
     )
+    global filters
+    filters = {}
+    if args.enable_notch:
+        filters["notch"] = args.notch
+    if args.enable_highpass:
+        filters["highpass"] = args.highpass
     client = IntercomClient(
         host=args.host,
         port=args.port,

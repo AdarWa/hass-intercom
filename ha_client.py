@@ -12,7 +12,9 @@ from audio_utils import (
     AudioSink,
     AudioSource,
     FileAudioSource,
+    HighPassFilter,
     MicrophoneAudioSource,
+    NotchFilter,
     NullAudioSink,
     SilenceAudioSource,
     SimpleAudioSink,
@@ -234,9 +236,13 @@ class HomeAssistantClient:
 
     async def _source_loop(self, stream: HomeAudioStream) -> None:
         frame_interval = stream.format.frame_ms / 1000.0
+        notch = NotchFilter(stream.format, freq=50)        # for hum
+        highpass = HighPassFilter(stream.format, cutoff=100)  # for clunks/pops
         try:
             while True:
                 frame = await stream.source.read_frame()
+                frame = notch.process(frame)
+                frame = highpass.process(frame)
                 await stream.connection.send(
                     {
                         "type": "audio_frame",

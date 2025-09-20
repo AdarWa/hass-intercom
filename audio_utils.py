@@ -11,10 +11,12 @@ import logging
 from pathlib import Path
 from typing import Optional
 
+import numpy as np
+from scipy.signal import iirnotch, butter, lfilter
+
 import simpleaudio as sa
 
 BYTES_PER_SAMPLE = 2
-
 
 def encode_audio_payload(data: bytes) -> str:
     return base64.b64encode(data).decode("ascii")
@@ -47,6 +49,39 @@ class AudioFormat:
     def frame_bytes(self) -> int:
         return self.samples_per_frame * self.channels * BYTES_PER_SAMPLE
 
+class AudioFilter:
+    def __init__(self, audio_format: AudioFormat):
+        self.format = audio_format
+
+    def process(self, frame: bytes) -> bytes:
+        return frame
+
+
+class NotchFilter(AudioFilter):
+    def __init__(self, audio_format: AudioFormat, freq=50, q=30.0):
+        super().__init__(audio_format)
+        self.b, self.a = iirnotch(freq, q, audio_format.sample_rate)
+        # keep filter state between frames
+        self.zi = np.zeros(max(len(self.a), len(self.b)) - 1)
+
+    def process(self, frame: bytes) -> bytes:
+        samples = np.frombuffer(frame, dtype=np.int16).astype(np.float32)
+        filtered, self.zi = lfilter(self.b, self.a, samples, zi=self.zi)
+        return np.clip(filtered, -32768, 32767).astype(np.int16).tobytes()
+
+
+class HighPassFilter(AudioFilter):
+    def __init__(self, audio_format: AudioFormat, cutoff=100, order=4):
+        super().__init__(audio_format)
+        nyquist = 0.5 * audio_format.sample_rate
+        norm_cutoff = cutoff / nyquist
+        self.b, self.a = butter(order, norm_cutoff, btype="high", analog=False)
+        self.zi = np.zeros(max(len(self.a), len(self.b)) - 1)
+
+    def process(self, frame: bytes) -> bytes:
+        samples = np.frombuffer(frame, dtype=np.int16).astype(np.float32)
+        filtered, self.zi = lfilter(self.b, self.a, samples, zi=self.zi)
+        return np.clip(filtered, -32768, 32767).astype(np.int16).tobytes()
 
 class AudioSource:
     def __init__(self, audio_format: AudioFormat) -> None:
