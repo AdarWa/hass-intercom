@@ -234,8 +234,7 @@ class IntercomHostServer:
                         raise ProtocolError("stream_id_in_use")
                     context["requested_stream_id"] = requested_stream_id
 
-                direction = payload.get("direction")
-                if direction is not None and direction != "both":
+                if "direction" in payload:
                     raise ProtocolError("audio_direction_unsupported")
 
                 if any(
@@ -301,9 +300,8 @@ class IntercomHostServer:
                 encoding = payload.get("encoding")
                 sample_rate = payload.get("sample_rate")
                 channels = payload.get("channels")
-                direction = payload.get("direction")
 
-                if direction is not None and direction != "both":
+                if "direction" in payload:
                     raise ProtocolError("audio_direction_unsupported")
 
                 if not isinstance(stream_id, str) or not stream_id:

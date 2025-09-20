@@ -320,6 +320,7 @@ class MockHomeAssistantClient:
             "encoding": "pcm_s16le",
             "sample_rate": sample_rate,
             "channels": channels,
+            "direction": "client_to_intercom",
             "data": base64.b64encode(data).decode("ascii"),
         }
         if sequence is not None:
@@ -389,6 +390,11 @@ class MockHomeAssistantClient:
         stream_id = message.get("stream_id")
         if not isinstance(stream_id, str) or not stream_id:
             logging.warning("Ignoring audio frame without stream_id: %s", message)
+            return
+
+        direction = message.get("direction")
+        if direction != "intercom_to_client":
+            logging.debug("Ignoring audio frame for %s with direction %s", stream_id, direction)
             return
 
         sample_rate = int(message.get("sample_rate", 16000))

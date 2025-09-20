@@ -1,7 +1,10 @@
 [project]
 name = "hass-intercom"
 version = "0.1.0"
-description = "Add your description here"
+description = "Home Assistant compatible intercom system"
 readme = "README.md"
 requires-python = ">=3.12"
-dependencies = ["simpleaudio"]
+dependencies = [
+    "simpleaudio @ git+https://github.com/cexen/py-simple-audio.git",
+    "sounddevice"
+]
