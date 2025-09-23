@@ -20,7 +20,7 @@ from protocol_client import ConnectionClosed, JsonConnection, open_connection, r
 
 DEFAULT_SAMPLE_RATE = 16000
 DEFAULT_CHANNELS = 1
-DEFAULT_FRAME_MS = 320
+DEFAULT_FRAME_MS = 400
 @dataclass(slots=True)
 class IntercomAudioStream:
     stream_id: str
