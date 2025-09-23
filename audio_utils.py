@@ -4,17 +4,10 @@ import asyncio
 import base64
 from collections import deque
 from dataclasses import dataclass
-from typing import Optional
+from typing import Optional, cast
 
 import simpleaudio as sa
-
-try:  # pragma: no cover - optional dependency
-    import sounddevice as sd  # type: ignore
-except ImportError as exc:  # pragma: no cover - dependency check
-    sd = None
-    _sounddevice_import_error = exc
-else:
-    _sounddevice_import_error = None
+import sounddevice as sd
 
 
 BYTES_PER_SAMPLE = 2
@@ -78,8 +71,6 @@ class MicrophoneAudioSource(AudioSource):
         self._queue: asyncio.Queue[bytes] = asyncio.Queue(maxsize=8)
 
     async def start(self) -> None:
-        if sd is None:
-            raise RuntimeError("sounddevice is required for microphone capture") from _sounddevice_import_error
         if self._stream is not None:
             return
 
@@ -129,8 +120,8 @@ class MicrophoneAudioSource(AudioSource):
 
     async def stop(self) -> None:
         if self._stream is not None:
-            await asyncio.to_thread(self._stream.stop)
-            await asyncio.to_thread(self._stream.close)
+            await asyncio.to_thread(cast(sd.RawInputStream,self._stream).stop)
+            await asyncio.to_thread(cast(sd.RawInputStream,self._stream).close)
             self._stream = None
         self._loop = None
         while not self._queue.empty():  # clear any buffered audio
