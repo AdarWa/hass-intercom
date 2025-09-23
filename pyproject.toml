@@ -8,5 +8,6 @@ dependencies = [
     "simpleaudio @ git+https://github.com/cexen/py-simple-audio.git",
     "sounddevice",
     "numpy",
-    "scipy"
+    "scipy",
+    "webrtc-audio-processing"
 ]

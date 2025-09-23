@@ -9,6 +9,7 @@ from typing import Callable, Dict, Optional
 
 from audio_utils import (
     AudioFormat,
+    EchoCanceller,
     AudioSink,
     AudioSource,
     FileAudioSource,
@@ -20,6 +21,8 @@ from audio_utils import (
     SimpleAudioSink,
     ToneAudioSource,
     WaveFileSink,
+    WebRTCAudioProcessor,
+    WebRTCProcessorConfig,
     decode_audio_payload,
     encode_audio_payload,
 )
@@ -28,6 +31,21 @@ from protocol_client import ConnectionClosed, JsonConnection, open_connection, r
 DEFAULT_SAMPLE_RATE = 16000
 DEFAULT_CHANNELS = 1
 DEFAULT_FRAME_MS = 320
+
+
+@dataclass(slots=True)
+class AudioProcessingConfig:
+    enable_notch: bool = False
+    notch_frequency: float = 50.0
+    enable_highpass: bool = False
+    highpass_cutoff: float = 100.0
+    enable_echo_cancel: bool = False
+    echo_filter_length: int = 1024
+    echo_adaptation: float = 0.05
+    echo_leakage: float = 0.999
+    echo_min_power: float = 1e-3
+    use_webrtc: bool = False
+    webrtc_config: WebRTCProcessorConfig = field(default_factory=WebRTCProcessorConfig)
 
 
 @dataclass(slots=True)
@@ -40,6 +58,8 @@ class IntercomAudioStream:
     connection: JsonConnection
     sequence: int = 0
     task: Optional[asyncio.Task[None]] = field(default=None, repr=False)
+    echo_canceller: Optional[EchoCanceller] = field(default=None, repr=False)
+    webrtc_processor: Optional[WebRTCAudioProcessor] = field(default=None, repr=False)
 
 
 class IntercomClient:
@@ -52,6 +72,7 @@ class IntercomClient:
         audio_format: AudioFormat,
         source_factory: Callable[[AudioFormat], AudioSource],
         sink_factory: Callable[[AudioFormat], AudioSink],
+        processing_config: Optional[AudioProcessingConfig] = None,
     ) -> None:
         self.host = host
         self.port = port
@@ -59,6 +80,7 @@ class IntercomClient:
         self.format = audio_format
         self._source_factory = source_factory
         self._sink_factory = sink_factory
+        self._processing = processing_config or AudioProcessingConfig()
         self._connection: Optional[JsonConnection] = None
         self._streams: Dict[str, IntercomAudioStream] = {}
         self._frame_interval = self.format.frame_ms / 1000.0
@@ -168,13 +190,48 @@ class IntercomClient:
             await sink.stop()
             return
 
+        webrtc_processor: Optional[WebRTCAudioProcessor] = None
+        if self._processing.use_webrtc:
+            try:
+                webrtc_processor = WebRTCAudioProcessor(self.format, self._processing.webrtc_config)
+                logging.debug("WebRTC audio processing enabled for stream %s", stream_id)
+            except Exception as exc:
+                logging.warning("WebRTC audio processing disabled for stream %s: %s", stream_id, exc)
+
+        echo_canceller: Optional[EchoCanceller] = None
+        if self._processing.enable_echo_cancel:
+            try:
+                echo_canceller = EchoCanceller(
+                    self.format,
+                    filter_length=self._processing.echo_filter_length,
+                    adaptation_rate=self._processing.echo_adaptation,
+                    leakage=self._processing.echo_leakage,
+                    min_power=self._processing.echo_min_power,
+                )
+                logging.debug(
+                    "Echo cancellation enabled for stream %s with filter_length=%d",
+                    stream_id,
+                    self._processing.echo_filter_length,
+                )
+            except Exception as exc:
+                logging.warning("Echo cancellation disabled for stream %s: %s", stream_id, exc)
+
+        if webrtc_processor is not None and echo_canceller is not None:
+            logging.info(
+                "Disabling standalone echo canceller for stream %s because WebRTC AEC is active",
+                stream_id,
+            )
+            echo_canceller = None
+
         stream = IntercomAudioStream(
             stream_id=stream_id,
             home_client_id=origin_id,
             format=self.format,
             source=source,
             sink=sink,
-            connection=connection
+            connection=connection,
+            echo_canceller=echo_canceller,
+            webrtc_processor=webrtc_processor,
         )
         task = asyncio.create_task(self._source_loop(stream))
         stream.task = task
@@ -241,6 +298,10 @@ class IntercomClient:
         except Exception as exc:
             logging.warning("Failed to decode audio payload: %s", exc)
             return
+        if stream.webrtc_processor is not None:
+            stream.webrtc_processor.process_render_frame(frame)
+        if stream.echo_canceller is not None:
+            stream.echo_canceller.update_far(frame)
         await stream.sink.play(frame)
 
     async def _handle_error(self, message: Dict) -> None:
@@ -253,16 +314,22 @@ class IntercomClient:
             await self._terminate_stream(stream_id)
 
     async def _source_loop(self, stream: IntercomAudioStream) -> None:
-        global filters
-        notch = NotchFilter(stream.format, freq=filters.get("notch", 50))        # for hum
-        highpass = HighPassFilter(stream.format, cutoff=filters.get("highpass", 100))  # for clunks/pops
+        config = self._processing
+        notch = NotchFilter(stream.format, freq=config.notch_frequency) if config.enable_notch else None
+        highpass = HighPassFilter(stream.format, cutoff=config.highpass_cutoff) if config.enable_highpass else None
+        echo = stream.echo_canceller
+        webrtc = stream.webrtc_processor
         try:
             while True:
                 frame = await stream.source.read_frame()
-                if "notch" in filters.keys():
-                    frame = notch.process(frame)
-                if "highpass" in filters.keys():
+                if webrtc is not None:
+                    frame = webrtc.process_capture_frame(frame)
+                if echo is not None:
+                    frame = echo.cancel(frame)
+                if highpass is not None:
                     frame = highpass.process(frame)
+                if notch is not None:
+                    frame = notch.process(frame)
                 await stream.connection.send(
                     {
                         "type": "audio_frame",
@@ -350,7 +417,8 @@ def _build_sink_factory(args: argparse.Namespace) -> Callable[[AudioFormat], Aud
         return lambda fmt: WaveFileSink(fmt, path)
     if args.mute:
         return lambda fmt: NullAudioSink(fmt)
-    return lambda fmt: SimpleAudioSink(fmt)
+    device = args.speaker_device or None
+    return lambda fmt: SimpleAudioSink(fmt, device=device)
 
 
 def parse_args() -> argparse.Namespace:
@@ -365,6 +433,7 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--mic", action="store_true", help="Capture intercom audio from the default microphone")
     parser.add_argument("--mic-device", help="Optional sounddevice input identifier")
     parser.add_argument("--sink-file", help="Write inbound audio to WAV file")
+    parser.add_argument("--speaker-device", help="Optional sounddevice output identifier")
     parser.add_argument("--tone-frequency", type=float, default=440.0, help="Tone generator frequency")
     parser.add_argument("--tone-amplitude", type=float, default=0.2, help="Tone amplitude (0-1)")
     parser.add_argument("--silence", action="store_true", help="Use silence as outbound audio source")
@@ -374,6 +443,20 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--highpass", type=float, default=100.0, help="High-pass filter cutoff (Hz)")
     parser.add_argument("--enable-notch", action="store_true", help="Enable notch filter")
     parser.add_argument("--enable-highpass", action="store_true", help="Enable high-pass filter")
+    parser.add_argument("--enable-echo-cancel", action="store_true", help="Enable adaptive echo cancellation")
+    parser.add_argument("--echo-filter-length", type=int, default=1024, help="Echo canceller filter length in samples")
+    parser.add_argument("--echo-adaptation", type=float, default=0.05, help="Echo canceller adaptation rate (0-1)")
+    parser.add_argument("--echo-leakage", type=float, default=0.999, help="Echo canceller leakage (0-1)")
+    parser.add_argument("--echo-min-power", type=float, default=1e-3, help="Minimum far-end power used for normalization")
+    parser.add_argument("--enable-webrtc", action="store_true", help="Use WebRTC audio processing pipeline")
+    parser.add_argument("--webrtc-disable-aec", action="store_true", help="Disable WebRTC acoustic echo cancellation")
+    parser.add_argument("--webrtc-enable-agc", action="store_true", help="Enable WebRTC automatic gain control")
+    parser.add_argument("--webrtc-disable-ns", action="store_true", help="Disable WebRTC noise suppression")
+    parser.add_argument("--webrtc-ns-level", default="high", help="WebRTC noise suppression level (e.g. low, moderate, high, very_high)")
+    parser.add_argument("--webrtc-agc-mode", default="adaptive_digital", help="WebRTC AGC mode (e.g. adaptive_digital, adaptive_analog)")
+    parser.add_argument("--webrtc-agc-target", type=int, default=3, help="WebRTC AGC target level in dBFS")
+    parser.add_argument("--webrtc-agc-compression", type=int, default=9, help="WebRTC AGC compression gain in dB")
+    parser.add_argument("--webrtc-disable-hpf", action="store_true", help="Disable WebRTC high-pass filter stage")
     return parser.parse_args()
 
 
@@ -385,12 +468,28 @@ def main() -> None:
         channels=args.channels,
         frame_ms=args.frame_ms,
     )
-    global filters
-    filters = {}
-    if args.enable_notch:
-        filters["notch"] = args.notch
-    if args.enable_highpass:
-        filters["highpass"] = args.highpass
+    processing_config = AudioProcessingConfig(
+        enable_notch=args.enable_notch,
+        notch_frequency=args.notch,
+        enable_highpass=args.enable_highpass,
+        highpass_cutoff=args.highpass,
+        enable_echo_cancel=args.enable_echo_cancel,
+        echo_filter_length=max(1, args.echo_filter_length),
+        echo_adaptation=max(args.echo_adaptation, 1e-6),
+        echo_leakage=args.echo_leakage,
+        echo_min_power=max(args.echo_min_power, 1e-9),
+        use_webrtc=args.enable_webrtc,
+        webrtc_config=WebRTCProcessorConfig(
+            enable_aec=not args.webrtc_disable_aec,
+            enable_agc=args.webrtc_enable_agc,
+            enable_noise_suppression=not args.webrtc_disable_ns,
+            enable_high_pass_filter=not args.webrtc_disable_hpf,
+            noise_suppression_level=args.webrtc_ns_level,
+            agc_mode=args.webrtc_agc_mode,
+            agc_target_level_dbfs=args.webrtc_agc_target,
+            agc_compression_gain_db=args.webrtc_agc_compression,
+        ),
+    )
     client = IntercomClient(
         host=args.host,
         port=args.port,
@@ -398,6 +497,7 @@ def main() -> None:
         audio_format=audio_format,
         source_factory=_build_source_factory(args),
         sink_factory=_build_sink_factory(args),
+        processing_config=processing_config,
     )
     try:
         asyncio.run(client.run())

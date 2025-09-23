@@ -363,7 +363,8 @@ def _build_sink_factory(args: argparse.Namespace) -> Callable[[AudioFormat], Aud
         return lambda fmt: WaveFileSink(fmt, path)
     if args.mute:
         return lambda fmt: NullAudioSink(fmt)
-    return lambda fmt: SimpleAudioSink(fmt)
+    device = args.speaker_device or None
+    return lambda fmt: SimpleAudioSink(fmt, device=device)
 
 
 def parse_args() -> argparse.Namespace:
@@ -378,6 +379,7 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--mic", action="store_true", help="Capture outbound audio from the default microphone")
     parser.add_argument("--mic-device", help="Optional sounddevice input identifier")
     parser.add_argument("--sink-file", help="Write inbound audio to a WAV file")
+    parser.add_argument("--speaker-device", help="Optional sounddevice output identifier")
     parser.add_argument("--tone", action="store_true", help="Use tone generator as outbound audio source")
     parser.add_argument("--tone-frequency", type=float, default=440.0, help="Tone generator frequency")
     parser.add_argument("--tone-amplitude", type=float, default=0.2, help="Tone amplitude (0-1)")

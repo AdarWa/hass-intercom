@@ -68,6 +68,7 @@ dependencies = [
     { name = "scipy" },
     { name = "simpleaudio" },
     { name = "sounddevice" },
+    { name = "webrtc-audio-processing" },
 ]
 
 [package.metadata]
@@ -76,6 +77,7 @@ requires-dist = [
     { name = "scipy" },
     { name = "simpleaudio", git = "https://github.com/cexen/py-simple-audio.git" },
     { name = "sounddevice" },
+    { name = "webrtc-audio-processing" },
 ]
 
 [[package]]
@@ -230,3 +232,9 @@ wheels = [
     { url = "https://files.pythonhosted.org/packages/45/0b/bfad79af0b380aa7c0bfe73e4b03e0af45354a48ad62549489bd7696c5b0/sounddevice-0.5.2-py3-none-win32.whl", hash = "sha256:3a113ce614a2c557f14737cb20123ae6298c91fc9301eb014ada0cba6d248c5f", size = 312665, upload-time = "2025-05-16T18:12:24.726Z" },
     { url = "https://files.pythonhosted.org/packages/e1/3e/61d88e6b0a7383127cdc779195cb9d83ebcf11d39bc961de5777e457075e/sounddevice-0.5.2-py3-none-win_amd64.whl", hash = "sha256:e18944b767d2dac3771a7771bdd7ff7d3acd7d334e72c4bedab17d1aed5dbc22", size = 363808, upload-time = "2025-05-16T18:12:26Z" },
 ]
+
+[[package]]
+name = "webrtc-audio-processing"
+version = "0.1.3"
+source = { registry = "https://pypi.org/simple" }
+sdist = { url = "https://files.pythonhosted.org/packages/ca/0b/eeca6ad8a7cabf3c6da8515700b7a29690269e3aae1e96ea24db1a466ad9/webrtc_audio_processing-0.1.3.tar.gz", hash = "sha256:247a8fe4567317b200839b46c93310deed15e8c0ec34a83c6d1b595a5df71754", size = 611204, upload-time = "2018-07-17T05:25:22.389Z" }
