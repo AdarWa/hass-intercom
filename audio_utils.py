@@ -19,6 +19,13 @@ try:  # pragma: no cover - optional dependency
 except ImportError:  # pragma: no cover - gracefully degrade when missing
     webrtc_ap = None
 
+try:  # pragma: no cover - optional dependency
+    from livekit.rtc.apm import AudioProcessingModule as lk_AudioProcessingModule  # type: ignore[attr-defined]
+    from livekit.rtc import AudioFrame as lk_AudioFrame  # type: ignore[attr-defined]
+except ImportError:  # pragma: no cover - gracefully degrade when missing
+    lk_AudioProcessingModule = None
+    lk_AudioFrame = None
+
 
 @dataclass(slots=True)
 class WebRTCProcessorConfig:
@@ -30,6 +37,14 @@ class WebRTCProcessorConfig:
     agc_mode: str = "adaptive_digital"
     agc_target_level_dbfs: int = 3
     agc_compression_gain_db: int = 9
+
+
+@dataclass(slots=True)
+class LiveKitAPMConfig:
+    echo_cancellation: bool = True
+    noise_suppression: bool = True
+    high_pass_filter: bool = True
+    auto_gain_control: bool = True
 
 
 class WebRTCAudioProcessor:
@@ -104,6 +119,123 @@ class WebRTCAudioProcessor:
                 return getattr(enum_type, default)
             except AttributeError:
                 return None
+
+
+class LiveKitAudioProcessor:
+    """Wrapper around LiveKit's AudioProcessingModule."""
+
+    def __init__(self, audio_format: AudioFormat, config: Optional[LiveKitAPMConfig] = None) -> None:
+        if lk_AudioProcessingModule is None or lk_AudioFrame is None:
+            raise RuntimeError("livekit rtc audio processing module is not available")
+        if audio_format.channels != 1:
+            raise ValueError("LiveKit audio processing currently supports mono audio only")
+        if audio_format.sample_rate % 100 != 0:
+            raise ValueError("LiveKit audio processing requires sample rates divisible by 100 for 10 ms frames")
+        self.format = audio_format
+        self.config = config or LiveKitAPMConfig()
+        self._chunk_samples = (self.format.sample_rate // 100) * self.format.channels
+        if self._chunk_samples <= 0:
+            raise ValueError("LiveKit audio processing requires a positive 10 ms frame size")
+        self._chunk_bytes = self._chunk_samples * BYTES_PER_SAMPLE
+        self._warned_capture_misaligned = False
+        self._warned_render_misaligned = False
+        self._processor = lk_AudioProcessingModule(
+            echo_cancellation=self.config.echo_cancellation,
+            noise_suppression=self.config.noise_suppression,
+            high_pass_filter=self.config.high_pass_filter,
+            auto_gain_control=self.config.auto_gain_control,
+        )
+        self._reverse_processor = getattr(self._processor, "process_reverse_stream", None)
+
+    def _make_frame(self, frame: bytes) -> "lk_AudioFrame":
+        samples_per_channel = len(frame) // (BYTES_PER_SAMPLE * self.format.channels)
+        if samples_per_channel <= 0:
+            raise ValueError("Audio frame must contain at least one sample per channel")
+        return lk_AudioFrame(
+            data=frame,
+            sample_rate=self.format.sample_rate,
+            num_channels=self.format.channels,
+            samples_per_channel=samples_per_channel,
+        )
+
+    def process_capture_frame(self, frame: bytes) -> bytes:
+        if not frame:
+            return frame
+        chunk_bytes = self._chunk_bytes
+        total = len(frame)
+        remainder = total % chunk_bytes
+        limit = total - remainder
+        if limit == 0:
+            if not self._warned_capture_misaligned:
+                logging.warning(
+                    "LiveKit APM received a %d-byte frame that is smaller than one 10 ms chunk (%d bytes); leaving frame unprocessed",
+                    total,
+                    chunk_bytes,
+                )
+                self._warned_capture_misaligned = True
+            return frame
+        if remainder and not self._warned_capture_misaligned:
+            logging.warning(
+                "LiveKit APM received a %d-byte frame that is not a multiple of the 10 ms chunk (%d bytes); trailing %d bytes will bypass processing",
+                total,
+                chunk_bytes,
+                remainder,
+            )
+            self._warned_capture_misaligned = True
+
+        output = bytearray(total)
+        for offset in range(0, limit, chunk_bytes):
+            chunk = frame[offset : offset + chunk_bytes]
+            audio_frame = self._make_frame(chunk)
+            processed = self._processor.process_stream(audio_frame)
+            target_frame = processed if processed is not None else audio_frame
+            processed_bytes = bytes(target_frame.data)
+            if len(processed_bytes) != chunk_bytes:
+                raise RuntimeError(
+                    f"LiveKit APM returned {len(processed_bytes)} bytes for a {chunk_bytes}-byte chunk"
+                )
+            output[offset : offset + chunk_bytes] = processed_bytes
+        if remainder:
+            output[limit:] = frame[limit:]
+        return bytes(output)
+
+    def process_render_frame(self, frame: bytes) -> None:
+        if not frame:
+            return
+        if self._reverse_processor is None:
+            return
+        chunk_bytes = self._chunk_bytes
+        total = len(frame)
+        remainder = total % chunk_bytes
+        limit = total - remainder
+        if limit == 0:
+            if not self._warned_render_misaligned:
+                logging.warning(
+                    "LiveKit APM received a render frame that is smaller than one 10 ms chunk (%d bytes); skipping frame",
+                    chunk_bytes,
+                )
+                self._warned_render_misaligned = True
+            return
+        if remainder and not self._warned_render_misaligned:
+            logging.warning(
+                "LiveKit APM received a render frame of %d bytes that is not a multiple of the 10 ms chunk (%d bytes); trailing %d bytes will bypass processing",
+                total,
+                chunk_bytes,
+                remainder,
+            )
+            self._warned_render_misaligned = True
+
+        for offset in range(0, limit, chunk_bytes):
+            chunk = frame[offset : offset + chunk_bytes]
+            audio_frame = self._make_frame(chunk)
+            self._reverse_processor(audio_frame)
+
+    def reset(self) -> None:
+        reset = getattr(self._processor, "reset", None)
+        if callable(reset):
+            reset()
+        self._warned_capture_misaligned = False
+        self._warned_render_misaligned = False
 
 
 class EchoCanceller:

@@ -5,7 +5,7 @@ import asyncio
 import logging
 import uuid
 from dataclasses import dataclass, field
-from typing import Callable, Dict, Optional
+from typing import Callable, Dict, Optional, Protocol
 
 from audio_utils import (
     AudioFormat,
@@ -21,6 +21,8 @@ from audio_utils import (
     SimpleAudioSink,
     ToneAudioSource,
     WaveFileSink,
+    LiveKitAudioProcessor,
+    LiveKitAPMConfig,
     WebRTCAudioProcessor,
     WebRTCProcessorConfig,
     decode_audio_payload,
@@ -44,6 +46,8 @@ class AudioProcessingConfig:
     echo_adaptation: float = 0.05
     echo_leakage: float = 0.999
     echo_min_power: float = 1e-3
+    use_livekit_apm: bool = False
+    livekit_config: LiveKitAPMConfig = field(default_factory=LiveKitAPMConfig)
     use_webrtc: bool = False
     webrtc_config: WebRTCProcessorConfig = field(default_factory=WebRTCProcessorConfig)
 
@@ -59,7 +63,15 @@ class IntercomAudioStream:
     sequence: int = 0
     task: Optional[asyncio.Task[None]] = field(default=None, repr=False)
     echo_canceller: Optional[EchoCanceller] = field(default=None, repr=False)
-    webrtc_processor: Optional[WebRTCAudioProcessor] = field(default=None, repr=False)
+    processor: Optional["AudioProcessor"] = field(default=None, repr=False)
+
+
+class AudioProcessor(Protocol):
+    def process_capture_frame(self, frame: bytes) -> bytes:
+        ...
+
+    def process_render_frame(self, frame: bytes) -> None:
+        ...
 
 
 class IntercomClient:
@@ -190,10 +202,22 @@ class IntercomClient:
             await sink.stop()
             return
 
-        webrtc_processor: Optional[WebRTCAudioProcessor] = None
-        if self._processing.use_webrtc:
+        if self._processing.use_livekit_apm and self._processing.use_webrtc:
+            logging.debug(
+                "Both LiveKit APM and WebRTC processing requested; LiveKit will be tried first",
+            )
+
+        audio_processor: Optional[AudioProcessor] = None
+        if self._processing.use_livekit_apm:
             try:
-                webrtc_processor = WebRTCAudioProcessor(self.format, self._processing.webrtc_config)
+                audio_processor = LiveKitAudioProcessor(self.format, self._processing.livekit_config)
+                logging.debug("LiveKit APM enabled for stream %s", stream_id)
+            except Exception as exc:
+                logging.warning("LiveKit APM disabled for stream %s: %s", stream_id, exc)
+
+        if audio_processor is None and self._processing.use_webrtc:
+            try:
+                audio_processor = WebRTCAudioProcessor(self.format, self._processing.webrtc_config)
                 logging.debug("WebRTC audio processing enabled for stream %s", stream_id)
             except Exception as exc:
                 logging.warning("WebRTC audio processing disabled for stream %s: %s", stream_id, exc)
@@ -216,9 +240,9 @@ class IntercomClient:
             except Exception as exc:
                 logging.warning("Echo cancellation disabled for stream %s: %s", stream_id, exc)
 
-        if webrtc_processor is not None and echo_canceller is not None:
+        if audio_processor is not None and echo_canceller is not None:
             logging.info(
-                "Disabling standalone echo canceller for stream %s because WebRTC AEC is active",
+                "Disabling standalone echo canceller for stream %s because APM echo cancellation is active",
                 stream_id,
             )
             echo_canceller = None
@@ -231,7 +255,7 @@ class IntercomClient:
             sink=sink,
             connection=connection,
             echo_canceller=echo_canceller,
-            webrtc_processor=webrtc_processor,
+            processor=audio_processor,
         )
         task = asyncio.create_task(self._source_loop(stream))
         stream.task = task
@@ -298,8 +322,8 @@ class IntercomClient:
         except Exception as exc:
             logging.warning("Failed to decode audio payload: %s", exc)
             return
-        if stream.webrtc_processor is not None:
-            stream.webrtc_processor.process_render_frame(frame)
+        if stream.processor is not None:
+            stream.processor.process_render_frame(frame)
         if stream.echo_canceller is not None:
             stream.echo_canceller.update_far(frame)
         await stream.sink.play(frame)
@@ -318,12 +342,12 @@ class IntercomClient:
         notch = NotchFilter(stream.format, freq=config.notch_frequency) if config.enable_notch else None
         highpass = HighPassFilter(stream.format, cutoff=config.highpass_cutoff) if config.enable_highpass else None
         echo = stream.echo_canceller
-        webrtc = stream.webrtc_processor
+        processor = stream.processor
         try:
             while True:
                 frame = await stream.source.read_frame()
-                if webrtc is not None:
-                    frame = webrtc.process_capture_frame(frame)
+                if processor is not None:
+                    frame = processor.process_capture_frame(frame)
                 if echo is not None:
                     frame = echo.cancel(frame)
                 if highpass is not None:
@@ -448,6 +472,11 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--echo-adaptation", type=float, default=0.05, help="Echo canceller adaptation rate (0-1)")
     parser.add_argument("--echo-leakage", type=float, default=0.999, help="Echo canceller leakage (0-1)")
     parser.add_argument("--echo-min-power", type=float, default=1e-3, help="Minimum far-end power used for normalization")
+    parser.add_argument("--enable-livekit-apm", action="store_true", help="Use LiveKit AudioProcessingModule pipeline")
+    parser.add_argument("--livekit-disable-aec", action="store_true", help="Disable LiveKit acoustic echo cancellation")
+    parser.add_argument("--livekit-disable-ns", action="store_true", help="Disable LiveKit noise suppression")
+    parser.add_argument("--livekit-disable-hpf", action="store_true", help="Disable LiveKit high-pass filter stage")
+    parser.add_argument("--livekit-disable-agc", action="store_true", help="Disable LiveKit automatic gain control")
     parser.add_argument("--enable-webrtc", action="store_true", help="Use WebRTC audio processing pipeline")
     parser.add_argument("--webrtc-disable-aec", action="store_true", help="Disable WebRTC acoustic echo cancellation")
     parser.add_argument("--webrtc-enable-agc", action="store_true", help="Enable WebRTC automatic gain control")
@@ -478,6 +507,13 @@ def main() -> None:
         echo_adaptation=max(args.echo_adaptation, 1e-6),
         echo_leakage=args.echo_leakage,
         echo_min_power=max(args.echo_min_power, 1e-9),
+        use_livekit_apm=args.enable_livekit_apm,
+        livekit_config=LiveKitAPMConfig(
+            echo_cancellation=not args.livekit_disable_aec,
+            noise_suppression=not args.livekit_disable_ns,
+            high_pass_filter=not args.livekit_disable_hpf,
+            auto_gain_control=not args.livekit_disable_agc,
+        ),
         use_webrtc=args.enable_webrtc,
         webrtc_config=WebRTCProcessorConfig(
             enable_aec=not args.webrtc_disable_aec,

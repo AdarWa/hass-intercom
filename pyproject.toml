@@ -9,5 +9,5 @@ dependencies = [
     "sounddevice",
     "numpy",
     "scipy",
-    "webrtc-audio-processing"
+    "livekit"
 ]

@@ -17,6 +17,8 @@
    - `--silence` to transmit silence.
    - `--sink-file /tmp/intercom_inbound.wav` to persist inbound audio instead of playing it.
    - `--mute` to disable playback.
+   - `--enable-livekit-apm` to route audio through LiveKit's acoustic echo cancellation, noise suppression, high-pass filter, and AGC (toggle individual stages with the `--livekit-disable-*` flags).
+   - `--enable-webrtc` to enable the legacy WebRTC audio processing pipeline and its related `--webrtc-*` tuning flags.
 
 3. Launch a Home Assistant client. It requests bidirectional audio automatically and plays inbound audio while streaming the configured source back to the intercom:
    ```bash
