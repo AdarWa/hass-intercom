@@ -11,15 +11,8 @@ from audio_utils import (
     AudioFormat,
     AudioSink,
     AudioSource,
-    FileAudioSource,
-    HighPassFilter,
     MicrophoneAudioSource,
-    NotchFilter,
-    NullAudioSink,
-    SilenceAudioSource,
     SimpleAudioSink,
-    ToneAudioSource,
-    WaveFileSink,
     decode_audio_payload,
     encode_audio_payload,
 )
@@ -236,13 +229,9 @@ class HomeAssistantClient:
 
     async def _source_loop(self, stream: HomeAudioStream) -> None:
         frame_interval = stream.format.frame_ms / 1000.0
-        notch = NotchFilter(stream.format, freq=50)        # for hum
-        highpass = HighPassFilter(stream.format, cutoff=100)  # for clunks/pops
         try:
             while True:
                 frame = await stream.source.read_frame()
-                frame = notch.process(frame)
-                frame = highpass.process(frame)
                 await stream.connection.send(
                     {
                         "type": "audio_frame",
@@ -346,25 +335,11 @@ class HomeAssistantClient:
 
 
 def _build_source_factory(args: argparse.Namespace) -> Callable[[AudioFormat], AudioSource]:
-    if args.source_file:
-        path = args.source_file
-        return lambda fmt: FileAudioSource(fmt, path, loop=True)
-    if args.mic:
-        device = args.mic_device
-        return lambda fmt: MicrophoneAudioSource(fmt, device=device)
-    if args.tone:
-        return lambda fmt: ToneAudioSource(fmt, frequency=args.tone_frequency, amplitude=args.tone_amplitude)
-    return lambda fmt: SilenceAudioSource(fmt)
+    return lambda fmt: MicrophoneAudioSource(fmt)
 
 
 def _build_sink_factory(args: argparse.Namespace) -> Callable[[AudioFormat], AudioSink]:
-    if args.sink_file:
-        path = args.sink_file
-        return lambda fmt: WaveFileSink(fmt, path)
-    if args.mute:
-        return lambda fmt: NullAudioSink(fmt)
-    device = args.speaker_device or None
-    return lambda fmt: SimpleAudioSink(fmt, device=device)
+    return lambda fmt: SimpleAudioSink(fmt)
 
 
 def parse_args() -> argparse.Namespace:
