@@ -1,0 +1,45 @@
+version: "3.9"
+
+services:
+  server:
+    build: .
+    command: ["python", "-m", "server", "--host", "0.0.0.0", "--port", "8765"]
+    ports:
+      - "8765:8765"
+    profiles: ["server"]
+
+  intercom-client:
+    build: .
+    command: [
+      "python",
+      "-m",
+      "intercom_client",
+      "--host",
+      "server",
+      "--port",
+      "8765",
+      "--client-id",
+      "intercom-1",
+      "--mic"
+    ]
+    depends_on:
+      - server
+    profiles: ["intercom"]
+
+  ha-client:
+    build: .
+    command: [
+      "python",
+      "-m",
+      "ha_client",
+      "--host",
+      "server",
+      "--port",
+      "8765",
+      "--client-id",
+      "ha-client-1",
+      "--mic"
+    ]
+    depends_on:
+      - server
+    profiles: ["ha"]
