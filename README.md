@@ -1,36 +1,86 @@
-## Usage
+# Home Assistant Intercom System
 
-1. Start the host server:
+![Python 3.12+](https://img.shields.io/badge/Python-3.12%2B-blue)
+![Asyncio](https://img.shields.io/badge/asyncio-event%20driven-44cc11)
+![Docker Compose](https://img.shields.io/badge/docker-compose-blue)
+[![Buy Me A Coffee](https://img.shields.io/badge/Buy%20Me%20a%20Coffee-support-yellow)](https://www.buymeacoffee.com/AdarWa)
+
+Asyncio-based host, embedded intercom client, and Home Assistant sample client for building a centrally managed smart intercom experience.
+
+## Architecture
+- **Host server** (`server.py`): Authenticates clients, enforces routing rules, and forwards JSON messages between agents.
+- **Embedded intercom client** (`intercom_client.py`): Represents the physical door station, publishes events, and executes commands from the host.
+- **Home Assistant clients** (`ha_client.py`): Automations or dashboards that subscribe to intercom events and issue commands via the host.
+- **Android background client**: Optional mobile companion that listens for Home Assistant events and opens the microphone automatically. Source available at [HassIntercomAndroidClient](https://github.com/AdarWa/HassIntercomAndroidClient).
+
+The server is the single source of truth: Home Assistant clients never communicate with each other directly, and every audio frame or command flows through the host. Additional background is documented in `AGENTS.md`.
+
+## Features
+- Event-driven asyncio host with strict protocol validation and per-client session tracking.
+- Bidirectional audio streams with PCM frames exchanged as newline-delimited JSON.
+- Optional Docker workflow that launches the host and sample clients.
+- Reusable protocol helpers and audio utilities for integrating custom hardware.
+- Android companion service that blends intercom controls into Home Assistant automations.
+
+## Requirements
+- Python 3.12+
+- PortAudio/SoundDevice dependencies (for Debian/Ubuntu: `sudo apt install libportaudio2 portaudio19-dev libsndfile1`)
+- Working microphone and speakers when running the audio clients locally
+
+## Local Setup
+1. Create a virtual environment using `uv` and activate it.
    ```bash
-   python3 server.py --host 127.0.0.1 --port 8765
+   uv sync
+   source .venv/bin/activate
    ```
 
-2. Launch the embedded intercom client. By default it generates a tone as outbound audio and plays inbound audio through the system output:
-   ```bash
-   python3 intercom_client.py --host 127.0.0.1 --port 8765 --client-id intercom-1
-   ```
+## Running Components
+### Host server
+```bash
+python -m server --host 0.0.0.0 --port 8765
+```
 
-   Optional flags:
-   - `--source-file /path/to/file.wav` to stream audio from a WAV file instead of the tone generator.
-   - `--mic` (optionally with `--mic-device`) to capture audio from a connected microphone.
-   - `--speaker-device hw:1,0` to play inbound audio through a specific PortAudio output device.
-   - `--silence` to transmit silence.
-   - `--sink-file /tmp/intercom_inbound.wav` to persist inbound audio instead of playing it.
-   - `--mute` to disable playback.
-   - `--enable-livekit-apm` to route audio through LiveKit's acoustic echo cancellation, noise suppression, high-pass filter, and AGC (toggle individual stages with the `--livekit-disable-*` flags).
-   - `--enable-webrtc` to enable the legacy WebRTC audio processing pipeline and its related `--webrtc-*` tuning flags.
+### Embedded intercom client
+```bash
+python -m intercom_client --host 127.0.0.1 --port 8765 --client-id intercom-1 --mic
+```
+`--mic` is required because the sample implementation captures audio from the default microphone. Use `--sample-rate`, `--channels`, or `--frame-ms` to match your hardware if needed.
 
-3. Launch a Home Assistant client. It requests bidirectional audio automatically and plays inbound audio while streaming the configured source back to the intercom:
-   ```bash
-   python3 ha_client.py --host 127.0.0.1 --port 8765 --client-id ha-client-1
-   ```
+### Home Assistant sample client
+```bash
+python -m ha_client --host 127.0.0.1 --port 8765 --client-id ha-client-1 --mic
+```
+Pass `--no-auto-start` to connect without immediately requesting audio, or `--stream-id` to request a specific stream identifier.
 
-   Useful options:
-   - `--tone` to transmit a tone to the intercom.
-   - `--source-file /path/to/file.wav` to send a WAV file loop.
-   - `--mic` (optionally with `--mic-device`) to send live audio from the default microphone.
-   - `--speaker-device hw:1,0` to direct playback to a specific PortAudio output device.
-   - `--sink-file /tmp/ha_inbound.wav` to store audio instead of playing it.
-   - `--no-auto-start` to connect without immediately requesting audio.
+### Android background client
+The Android service client subscribes to Home Assistant events, keeps an intercom session alive in the background, and activates the device microphone automatically so the experience feels native inside Home Assistant. Install or build it from [HassIntercomAndroidClient](https://github.com/AdarWa/HassIntercomAndroidClient) and configure it to point at your running host.
 
-Both clients honour sample rate, channel count, and frame duration settings (`--sample-rate`, `--channels`, `--frame-ms`) and can write or discard audio when the system output is unavailable. Live microphone capture and selecting a non-default speaker device require the optional `sounddevice` dependency with a working PortAudio stack.
+## Docker Compose Quickstart
+The repository ships with a compose file that can run the host and the sample clients:
+```bash
+docker compose --profile server up
+```
+Start additional profiles as needed:
+```bash
+# Launch the embedded intercom sample client
+docker compose --profile intercom up
+
+# Launch the Home Assistant sample client
+docker compose --profile ha up
+```
+Use separate terminals when running multiple services simultaneously.
+
+## Protocol Reference
+The complete message flow—registration, commands, responses, events, and audio frames—is described in `PROTOCOL.md`. Home Assistant integrations can reuse `protocol_client.py` for handling JSON framing and registration.
+
+## Audio Notes
+The sample clients depend on the system microphone and speakers. If you experience echo or feedback during two-way audio, review `enable-echo-cancelling.sh`, which shows how to enable the PulseAudio echo cancellation module on Linux hosts (run it outside Docker and only if you understand the changes).
+
+## Support This Project
+If the intercom system is helping your setup, consider supporting future development.
+
+<p>
+  <a href="https://www.buymeacoffee.com/AdarWa" target="_blank">
+    <img src="https://cdn.buymeacoffee.com/buttons/v2/default-yellow.png" alt="Buy Me A Coffee" height="42">
+  </a>
+</p>
